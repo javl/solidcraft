@@ -248,6 +248,10 @@ crate::dialog_descriptor::dialog_descriptors! {
                 suggested: Option<String>,
                 /// The picks used for the suggestion, so an unchanged dialog does no geometry work.
                 of: Vec<Sel>,
+                /// Modelled only: how far the profile moves out from the axis (or in, negative).
+                offset: String,
+                /// The Offset option: its row shows, and the offset applies, only when on.
+                use_offset: bool,
             },
             /// A rib (one wall along open curves) or a web (a wall per curve).
             Rib {
@@ -886,6 +890,8 @@ impl Dialog {
                     handedness: ThreadHandedness::Right,
                     suggested: None,
                     of: Vec::new(),
+                    offset: String::new(),
+                    use_offset: false,
                 },
                 vec![SelInput::new("Cylindrical face", FACES, false)],
             ),
@@ -4398,13 +4404,17 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             need(0, "faces")?;
             ("solid.offset_face", json!({"faces": face_points(0)}))
         }
-        Kind::Thread { designation, length, suggested, handedness, .. } => {
+        Kind::Thread { designation, length, suggested, handedness, offset, use_offset, .. } => {
             need(0, "a cylindrical face")?;
             let mut p = json!({"face": face_points(0).into_iter().next().unwrap_or(Value::Null)});
             if !designation.trim().is_empty() && suggested.as_deref() != Some(designation.as_str()) {
                 p["designation"] = json!(designation.trim());
             }
             put(&mut p, &[("length", length)]);
+            // The offset row shows only for a modelled thread with Offset on; otherwise it is left out.
+            if *use_offset && d.extra.get("modeled").and_then(Value::as_bool).unwrap_or(false) {
+                put(&mut p, &[("offset", offset)]);
+            }
             if !handedness.is_right() {
                 p["handedness"] = json!(handedness);
             }
@@ -5985,7 +5995,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Thread { face, designation, length, modeled, handedness } => {
+        FeatureKind::Thread { face, designation, length, modeled, handedness, offset } => {
             let mut d = start("solid.thread")?;
             if *modeled {
                 d.extra.insert("modeled".into(), json!(true));
@@ -5996,6 +6006,8 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                 handedness: *handedness,
                 suggested: None,
                 of: Vec::new(),
+                offset: offset.as_deref().map(str::to_string).unwrap_or_default(),
+                use_offset: offset.is_some(),
             };
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = face_sel(s, face.0).into_iter().collect();

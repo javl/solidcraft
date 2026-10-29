@@ -542,6 +542,54 @@ fn modelled_internal_threads_m3_to_m20() {
     }
 }
 
+/// An offset moves the whole M8 profile in or out, such as a clearance for 3D printing: a bolt
+/// offset in is turned down by it and grooved to a root as much deeper; a nut offset out is
+/// bored by it and grooved as much further out. Volumes are the ring plus the shifted profile.
+#[test]
+fn a_modelled_thread_offset_moves_the_whole_profile() {
+    let (d, p, o) = (8.0, 1.25, 0.2);
+    let h = p * 3f64.sqrt() / 2.0;
+    let slope = (PI / 6.0).tan();
+    let len = 4.0 * p;
+    let (r, r_root, r_minor) = (d / 2.0, d / 2.0 - 5.0 * h / 8.0, d / 2.0 - 5.0 * h / 8.0);
+
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": r, "height": len + 2.0, "body_name": "Shaft"}));
+    let before = volume(&mut s, "Shaft");
+    run(&mut s, "solid.thread", json!({"face": [r, 0, 1], "designation": "M8", "length": len, "modeled": true, "offset": -o}));
+    let ring = PI * (r * r - (r - o) * (r - o)) * len;
+    let root = r_root - o;
+    let want = ring + per_turn(root, r - o, |x| p / 4.0 + 2.0 * (x - root) * slope) * len / p;
+    let got = before - volume(&mut s, "Shaft");
+    assert!((got - want).abs() < want * 0.03, "bolt offset -{o}: removed {got}, want {want}");
+
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"corner": [-d, -d, 0], "length": 2.0 * d, "width": 2.0 * d, "height": len, "body_name": "Nut"}));
+    run(&mut s, "solid.cylinder", json!({"base": [0, 0, -1], "radius": r_minor, "height": len + 2.0, "body_name": "Bore"}));
+    run(&mut s, "solid.combine", json!({"target": "Nut", "tools": ["Bore"], "operation": "cut"}));
+    let before = volume(&mut s, "Nut");
+    run(&mut s, "solid.thread", json!({"face": [r_minor, 0, len / 2.0], "designation": "M8", "modeled": true, "offset": format!("{o} mm")}));
+    let bore = PI * ((r_minor + o) * (r_minor + o) - r_minor * r_minor) * len;
+    let want = bore + per_turn(r_minor + o, r + o, |x| p / 8.0 + 2.0 * (r + o - x) * slope) * len / p;
+    let got = before - volume(&mut s, "Nut");
+    assert!((got - want).abs() < want * 0.03, "nut offset +{o}: removed {got}, want {want}");
+    let st = s.model.state();
+    let Some(b) = st.body("Nut") else { panic!("no nut") };
+    assert!(b.body.validity().is_empty(), "{:?}", b.body.validity());
+    let fid = s.doc.features.last().map(|f| f.id).unwrap_or(0);
+    assert!(solidcraft_doc::naming::face_names(b).iter().any(|n| n.starts_with(&format!("F{fid}:bored"))));
+
+    // A cosmetic thread has no profile to move, and an offset as large as the profile is refused.
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": r, "height": len, "body_name": "Shaft"}));
+    let e = s.execute("solid.thread", &json!({"face": [r, 0, 1], "designation": "M8", "offset": -o})).err().map(|e| e.to_string());
+    assert!(e.unwrap_or_default().contains("modeled: true"));
+    let e = s.execute("solid.thread", &json!({"face": [r, 0, 1], "designation": "M8", "modeled": true, "offset": -1.1})).err().map(|e| e.to_string());
+    assert!(e.unwrap_or_default().contains("smaller than its 1.08 mm profile height"));
+    assert!(s.execute("solid.thread", &json!({"face": [r, 0, 1], "modeled": true, "offset": "1e300"})).is_err());
+    assert_eq!(s.doc.features.len(), 1);
+}
+
 /// Issue 995: an M5 modelled thread in a 5 mm hole cut nothing (the groove lay in the hole, from
 /// the minor diameter out to the 5 mm major one) and only left the wall faceted. A modelled thread
 /// that would cut next to nothing is refused, with the drill to use and the size that fits;

@@ -128,7 +128,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.thread", "Thread", thread)
         .at("SOLID", "CREATE")
         .icon("thread")
-        .params("face: [x,y,z] on a cylindrical face; designation?: ISO metric (\"M8\", \"M8x1\"; default: the size that fits); length?: expr (default: the whole face); handedness?: right|left (default right); modeled?: bool (default false). Cosmetic: the model is unchanged, model.threads lists it. Modeled: cuts the thread profile into the body; a shaft thicker than the thread is first turned down to its major diameter over the threaded length"),
+        .params("face: [x,y,z] on a cylindrical face; designation?: ISO metric (\"M8\", \"M8x1\"; default: the size that fits); length?: expr (default: the whole face); handedness?: right|left (default right); modeled?: bool (default false); offset?: expr, modeled only (moves the whole profile out from the axis, positive: a larger thread, negative: a smaller one, such as a clearance for 3D printing; an internal thread offset out is bored to its new crests). Cosmetic: the model is unchanged, model.threads lists it. Modeled: cuts the thread profile into the body; a shaft thicker than the thread is first turned down to its major diameter over the threaded length"),
     CommandSpec::new("solid.shell", "Shell", shell)
         .at("SOLID", "MODIFY")
         .icon("shell")
@@ -2960,13 +2960,20 @@ fn thread(s: &mut Session, p: &Value) -> Result<Value> {
         check_expr(s, l, Kind::Length, cmd, "length")?;
     }
     let modeled = p.get("modeled").and_then(Value::as_bool).unwrap_or(false);
+    let offset = expr(p, "offset");
+    if let Some(o) = &offset {
+        if !modeled {
+            return Err(bad(cmd, "`offset` moves a modeled thread's profile; add `modeled: true`"));
+        }
+        check_expr(s, o, Kind::Length, cmd, "offset")?;
+    }
     if designation.is_none()
         && let Some(msg) = beyond_coarse_range(&s.model.state(), face)
     {
         return Err(bad(cmd, msg));
     }
     let handedness = thread_handedness(p, cmd)?;
-    let v = add_feature(s, p, FeatureKind::Thread { face: FacePick(face), designation, length, modeled, handedness })?;
+    let v = add_feature(s, p, FeatureKind::Thread { face: FacePick(face), designation, length, modeled, handedness, offset })?;
     let st = s.model.state();
     let t = v.get("feature").and_then(Value::as_u64).and_then(|id| st.threads.iter().find(|t| t.feature == id).cloned());
     Ok(json!({"feature": v.get("feature"), "name": v.get("name"), "thread": t}))

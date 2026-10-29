@@ -665,11 +665,23 @@ mod thread_handedness_tests {
 /// length, run on past an end of the face that nothing of the part (`mb`) lies beyond. `None`
 /// for a shaft no thicker than the thread. Its inner wall is the turned face, named `turned`;
 /// an end that stops inside the face leaves a shoulder, `shoulder:start` or `shoulder:end`.
-fn thread_turn(t: &ThreadInfo, cyl: &kernel::CylinderFace, mb: &ModelBody) -> Result<Option<Traced>> {
-    let (p, r) = (t.pitch, t.major_diameter / 2.0);
-    if t.internal || !(cyl.radius > r * (1.0 + 1e-6)) {
-        return Ok(None);
-    }
+/// An internal thread is bored out the same way to `bore` (a thread offset out from the axis),
+/// its outer wall named `bored`; `None` for a hole at least that wide.
+fn thread_turn(t: &ThreadInfo, cyl: &kernel::CylinderFace, mb: &ModelBody, bore: f64) -> Result<Option<Traced>> {
+    let p = t.pitch;
+    // The ring's inner and outer radius, and the profile segment that is the new wall.
+    let (lo, hi, wall) = if t.internal {
+        if !(bore > cyl.radius * (1.0 + 1e-6)) {
+            return Ok(None);
+        }
+        ((cyl.radius - 0.1 * p).max(cyl.radius / 2.0), bore, 1)
+    } else {
+        let r = t.major_diameter / 2.0;
+        if !(cyl.radius > r * (1.0 + 1e-6)) {
+            return Ok(None);
+        }
+        (r, cyl.radius + 0.1 * p, 3)
+    };
     let k = t.axis;
     let u = k.cross(if k.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) });
     let u = u.normalized().ok_or_else(|| DocError::Invalid("thread axis".into()))?;
@@ -683,8 +695,7 @@ fn thread_turn(t: &ThreadInfo, cyl: &kernel::CylinderFace, mb: &ModelBody) -> Re
     };
     // The ring reaches a little past the shaft; the part must not go on there (a shaft standing
     // in a corner, a rounded edge), or the turning would cut into it.
-    let out = cyl.radius + 0.1 * p;
-    if [0.25, 0.5, 0.75].iter().any(|f| solid_round(t.start + (t.end - t.start) * f, cyl.radius + 0.05 * p)) {
+    if !t.internal && [0.25, 0.5, 0.75].iter().any(|f| solid_round(t.start + (t.end - t.start) * f, cyl.radius + 0.05 * p)) {
         return Err(DocError::Invalid(format!(
             "this {} mm shaft is too thick for a modelled {} thread, and the part around it keeps it from being turned down; make the shaft {} mm",
             show_mm(2.0 * cyl.radius),
@@ -694,13 +705,13 @@ fn thread_turn(t: &ThreadInfo, cyl: &kernel::CylinderFace, mb: &ModelBody) -> Re
     }
     // Past a free end of the face out into the air; elsewhere square at the threaded length's end.
     let tol = p * 1e-3;
-    let mid = (r + cyl.radius) / 2.0;
+    let mid = (lo + hi) / 2.0;
     let free = |at: f64, s: f64, past: f64| (at - s).abs() < tol && !solid_round(s + past * 0.5 * p, mid);
     let (open0, open1) = (free(cyl.start, t.start, -1.0), free(cyl.end, t.end, 1.0));
     let s0 = if open0 { t.start - p } else { t.start };
     let s1 = if open1 { t.end + p } else { t.end };
     let plane = Plane { origin: t.axis_point, x: u, y: *k };
-    let ring = [Vec2::new(r, s0), Vec2::new(out, s0), Vec2::new(out, s1), Vec2::new(r, s1)];
+    let ring = [Vec2::new(lo, s0), Vec2::new(hi, s0), Vec2::new(hi, s1), Vec2::new(lo, s1)];
     let region = Region2 { outer: solidcraft_geom::Loop2::polygon(&ring), holes: vec![] };
     let ring = kernel::revolve(&plane, &[region], Vec2::ZERO, Vec2::Y, std::f64::consts::TAU)?
         .into_iter()
@@ -711,7 +722,7 @@ fn thread_turn(t: &ThreadInfo, cyl: &kernel::CylinderFace, mb: &ModelBody) -> Re
         match segment {
             0 if !open0 => vec!["shoulder:start".into()],
             2 if !open1 => vec!["shoulder:end".into()],
-            3 => vec!["turned".into()],
+            s if s == wall => vec![if t.internal { "bored" } else { "turned" }.into()],
             _ => Vec::new(),
         }
     };
@@ -7274,12 +7285,12 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             }
             Ok(())
         }
-        FeatureKind::Thread { face, designation, length, modeled, handedness } => {
+        FeatureKind::Thread { face, designation, length, modeled, handedness, offset } => {
             let l = match length {
                 Some(e) => Some(val(vals, e, Kind::Length)?),
                 None => None,
             };
-            let t = thread_on(st, f.id, face.0, designation.as_deref(), l, *modeled, *handedness)?;
+            let mut t = thread_on(st, f.id, face.0, designation.as_deref(), l, *modeled, *handedness)?;
             if !*modeled {
                 st.threads.push(t);
                 return Ok(());
@@ -7288,13 +7299,29 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Invalid("body".into())) };
             let cyl = kernel::cylinder_face_at(&mb.body, face.0).ok_or_else(|| DocError::Invalid("no cylindrical face there to thread".into()))?;
             let tol = t.pitch * 1e-3;
-            // A shaft thicker than the thread is turned down to its major diameter first.
+            // The whole profile moved out from the axis (or in): the fit is checked at the ISO
+            // size, then the thread is cut at its offset major diameter.
+            let offset = match offset {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 0.0,
+            };
+            let height = t.pitch * 3f64.sqrt() / 2.0;
+            if !(offset.abs() < height) {
+                return Err(DocError::Invalid(format!(
+                    "a {} thread's offset must be smaller than its {height:.2} mm profile height",
+                    t.designation
+                )));
+            }
+            t.major_diameter += 2.0 * offset;
+            // A shaft thicker than the thread is turned down to its major diameter first, and a
+            // hole offset out is bored to its new crests.
             let input = mb.traced();
-            let (input, radius) = match thread_turn(&t, &cyl, &mb)? {
+            let bore = if t.internal && offset > 0.0 { cyl.radius + offset } else { 0.0 };
+            let (input, radius) = match thread_turn(&t, &cyl, &mb, bore)? {
                 Some(ring) => {
                     let turned = kernel::boolean(&input.body, &ring.body, BoolOp::Cut)?
                         .ok_or_else(|| DocError::Invalid("turning the shaft down removed everything".into()))?;
-                    (Traced::step(turned, &[&input, &ring]), t.major_diameter / 2.0)
+                    (Traced::step(turned, &[&input, &ring]), if t.internal { bore } else { t.major_diameter / 2.0 })
                 }
                 None => (input, cyl.radius),
             };

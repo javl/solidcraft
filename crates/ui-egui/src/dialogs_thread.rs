@@ -156,8 +156,16 @@ pub(crate) fn handedness_row(ui: &mut egui::Ui, handedness: &mut ThreadHandednes
     *handedness = if selected == 1 { ThreadHandedness::Left } else { ThreadHandedness::Right };
 }
 
-/// Returns (Enter pressed, automatic sizing requested).
-pub(crate) fn rows(ui: &mut egui::Ui, designation: &mut String, suggested: &mut Option<String>, modeled: &mut bool, full: &mut bool) -> (bool, bool) {
+/// Returns (Enter pressed, automatic sizing requested). `offset` is the Offset option, which
+/// only a modelled thread has.
+pub(crate) fn rows(
+    ui: &mut egui::Ui,
+    designation: &mut String,
+    suggested: &mut Option<String>,
+    modeled: &mut bool,
+    full: &mut bool,
+    offset: &mut bool,
+) -> (bool, bool) {
     form_row(ui, "Profile", |ui| {
         ui.label(tr("thread.iso_metric"));
     });
@@ -165,7 +173,14 @@ pub(crate) fn rows(ui: &mut egui::Ui, designation: &mut String, suggested: &mut 
     let before = designation.trim().is_empty() || suggested.as_deref() == Some(designation.as_str());
     let mut automatic = before;
     crate::ui_kit::section(ui, "thread_options", "Options", true, |ui| {
-        crate::ui_kit::checkbox_grid(ui, &mut [("Modeled", modeled), ("Full Length", full)], 2);
+        // Offset beside Modeled, greyed out until the thread is modelled.
+        ui.columns(2, |columns| {
+            if let [left, right] = columns {
+                crate::ui_kit::checkbox_grid(left, &mut [("Modeled", modeled)], 1);
+                right.add_enabled_ui(*modeled, |ui| crate::ui_kit::checkbox_grid(ui, &mut [("thread.offset", offset)], 1));
+            }
+        });
+        crate::ui_kit::checkbox_grid(ui, &mut [("Full Length", full)], 2);
         ui.add_enabled_ui(!designation.trim().is_empty(), |ui| crate::ui_kit::checkbox_grid(ui, &mut [("Automatic size", &mut automatic)], 2));
     });
     let reset = automatic && !before;
@@ -578,6 +593,7 @@ mod contribution_tests {
             let mut suggested = None;
             let mut modeled = false;
             let mut full = true;
+            let mut offset = false;
             let mut custom = None;
             let doc = Document::default();
             let _ = context.run_ui(Default::default(), |ui| {
@@ -585,7 +601,7 @@ mod contribution_tests {
                     hole_rows(ui, &doc, &mut hole, &mut custom);
                 });
                 egui::Grid::new("authored_thread").show(ui, |ui| {
-                    rows(ui, &mut thread, &mut suggested, &mut modeled, &mut full);
+                    rows(ui, &mut thread, &mut suggested, &mut modeled, &mut full, &mut offset);
                 });
             });
             assert_eq!(hole, original);

@@ -830,6 +830,11 @@ pub enum FeatureKind {
         modeled: bool,
         #[serde(default, skip_serializing_if = "ThreadHandedness::is_right")]
         handedness: ThreadHandedness,
+        /// Modelled only: moves the whole profile out from the axis (positive, a larger thread)
+        /// or in (negative), such as a clearance for 3D printing; `None` = the ISO profile.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Offset")]
+        offset: Option<Expr>,
     },
     /// Ruled loft through profiles of several sketches, in order.
     Loft {

@@ -1,0 +1,17 @@
+{
+  "en": {
+    "thread.offset": "Offset"
+  },
+  "de": {
+    "thread.offset": "Versatz"
+  },
+  "ja": {
+    "thread.offset": "オフセット"
+  },
+  "ko": {
+    "thread.offset": "오프셋"
+  },
+  "zh": {
+    "thread.offset": "偏移"
+  }
+}
